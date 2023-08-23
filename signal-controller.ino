@@ -498,7 +498,9 @@ void loop() {
     digitalWrite(1, (i & (1<<2))!=0);  // Multiplexer A2
     digitalWrite(0, (i & (1<<3))!=0);  // Multiplexer A3
     
-    if (analogRead(A4) > 160) {  // Around 1V of 5V total
+    auto val = analogRead(A4);
+    int tol = (int)((3.7-2.5)*1024.0);  // 3.7V trigger
+    if (val > 512+tol or val < 512-tol) {  // Check in both directions in case magnets flipped
       hall_sequences[i].enqueue(); 
     }
 
