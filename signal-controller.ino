@@ -436,8 +436,29 @@ const Sequence hall_sequences[] = {
   {he12, 2},
 };
 
+void output_enable() {
+  digitalWrite(A5, HIGH);
+}
+void output_disable() {
+  digitalWrite(A5, LOW);
+}
+
 
 void setup() {
+  pinMode(0, OUTPUT);
+  pinMode(1, OUTPUT);
+  pinMode(2, OUTPUT);
+  pinMode(3, OUTPUT);
+  pinMode(A4, INPUT);
+
+  // OE
+  pinMode(A5, OUTPUT);
+  output_disable();
+  
+  for (auto& pin : point_triggers) {
+    pinMode(pin, INPUT);
+  }
+
   Serial.begin(115200);
 
   i2c.setWireTimeout(25000, true);  //25ms (25000us) is typical according to the wire.cpp source, reset on fault
@@ -454,15 +475,6 @@ void setup() {
   pwm2.setOscillatorFrequency(27000000);
   pwm2.setPWMFreq(SERVO_FREQ);  // Analog servos run at ~50 Hz updates
 
-  pinMode(0, OUTPUT);
-  pinMode(1, OUTPUT);
-  pinMode(2, OUTPUT);
-  pinMode(3, OUTPUT);
-  pinMode(A4, INPUT);
-
-  for (auto& pin : point_triggers) {
-    pinMode(pin, INPUT);
-  }
 
   Serial.println(F("Ready"));
 }
@@ -503,7 +515,6 @@ void loop() {
     if (val > 512+tol or val < 512-tol) {  // Check in both directions in case magnets flipped
       hall_sequences[i].enqueue(); 
     }
-
     hall_sequences[i].update();
   }
 
@@ -512,6 +523,7 @@ void loop() {
   for (auto& signal : signals) {
     signal.update();
   }
+  output_enable();
   
   if (send_heartbeat) {
     Serial.println("Heartbeat");
