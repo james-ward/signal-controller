@@ -493,6 +493,8 @@ void loop() {
       if (digitalRead(point_triggers[i])) {
         point_sequences[i].enqueue();
         debounce_counter = 0;
+        Serial.print(F("Points triggered: "));
+        Serial.println(point_triggers[i]);
       }
     }
      
@@ -513,7 +515,9 @@ void loop() {
     auto val = analogRead(A4);
     int tol = (int)((3.7-2.5)*1024.0);  // 3.7V trigger
     if (val > 512+tol or val < 512-tol) {  // Check in both directions in case magnets flipped
-      hall_sequences[i].enqueue(); 
+      hall_sequences[i].enqueue();
+      Serial.print(F("Hall effect triggered: "));
+      Serial.println(i);
     }
     hall_sequences[i].update();
   }
@@ -526,7 +530,7 @@ void loop() {
   output_enable();
   
   if (send_heartbeat) {
-    Serial.println("Heartbeat");
+    Serial.println(F("Heartbeat - version: hall effect"));
   }
 
   debounce_counter = min(debounce_counter + 1, 200);
