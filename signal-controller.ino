@@ -437,10 +437,10 @@ const Sequence hall_sequences[] = {
 };
 
 void output_enable() {
-  digitalWrite(A5, HIGH);
+  digitalWrite(A5, LOW);
 }
 void output_disable() {
-  digitalWrite(A5, LOW);
+  digitalWrite(A5, HIGH);
 }
 
 
@@ -449,7 +449,6 @@ void setup() {
   pinMode(1, OUTPUT);
   pinMode(2, OUTPUT);
   pinMode(3, OUTPUT);
-  pinMode(A4, INPUT);
 
   // OE
   pinMode(A5, OUTPUT);
@@ -486,6 +485,7 @@ void loop() {
     heartbeat = millis();
     send_heartbeat = true;
   }
+
   // Check for sequences that want to change their signals
   for (unsigned char i=0; i< sizeof(point_sequences)/sizeof(point_sequences[0]); i++) {
     // Check the triggers
@@ -494,15 +494,19 @@ void loop() {
         point_sequences[i].enqueue();
         debounce_counter = 0;
         Serial.print(F("Points triggered: "));
-        Serial.println(point_triggers[i]);
+        Serial.println(point_triggers[i]*1);
       }
     }
-     
-    point_sequences[i].update();
+  }
+
+
+  for (const auto & sequence : point_sequences) {
+    sequence.update();
   }
 
   // Check for hall effect triggers to set signals back to danger
-  for (unsigned char i=0; i< sizeof(hall_sequences)/sizeof(hall_sequences[0]); i++) {
+  for (unsigned char i=4; i< 5; i++) {
+  //for (unsigned char i=0; i< sizeof(hall_sequences)/sizeof(hall_sequences[0]); i++) {
     // Check the triggers
     // Triggers are sequential so no need to map them
     
@@ -512,23 +516,28 @@ void loop() {
     digitalWrite(1, (i & (1<<2))!=0);  // Multiplexer A2
     digitalWrite(0, (i & (1<<3))!=0);  // Multiplexer A3
     
-    auto val = analogRead(A4);
-    int tol = (int)((3.7-2.5)*1024.0);  // 3.7V trigger
+    /*
+    int val = analogRead(A4);
+    int tol = (int)((3.7-2.5)/5.0*1024.0);  // 3.7V trigger
+    Serial.println(val);
     if (val > 512+tol or val < 512-tol) {  // Check in both directions in case magnets flipped
       hall_sequences[i].enqueue();
       Serial.print(F("Hall effect triggered: "));
       Serial.println(i);
     }
-    hall_sequences[i].update();
+    */
   }
 
-  
+  for (const auto & sequence : hall_sequences) {
+    sequence.update();
+  }
+
   // Now move the signals
   for (auto& signal : signals) {
     signal.update();
   }
   output_enable();
-  
+
   if (send_heartbeat) {
     Serial.println(F("Heartbeat - version: hall effect"));
   }
