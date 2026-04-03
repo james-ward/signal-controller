@@ -1,4 +1,5 @@
 #include <Wire.h>
+#define ENABLE_DEBUG_OUTPUT
 #include <Adafruit_PWMServoDriver.h>
 
 TwoWire i2c;
@@ -13,13 +14,11 @@ Adafruit_PWMServoDriver pwm2 = Adafruit_PWMServoDriver(0x42, i2c);
 bool sequence_running = false;
 unsigned long heartbeat = millis();
 
-unsigned char debounce_counter = 0;
-
 class Signal;
 
-enum struct BoardColour {
+enum class BoardColour {
   YELLOW,
-  PINK,
+  ROSE,  // PINK is used in a macro for the MEGA2560
   BLUE,
 };
 
@@ -29,6 +28,7 @@ void setPosition(int servonum, Adafruit_PWMServoDriver& pwm, float pos_degrees) 
 }
 
 enum class State {
+  INIT,
   CLEAR,
   DANGER,
   MOVING_CLEAR,
@@ -40,9 +40,17 @@ public:
   Signal(const unsigned char servo_number, Adafruit_PWMServoDriver& pwm, const unsigned char clear_degrees, const unsigned char danger_degrees) :
   servo(servo_number), pwm(pwm), clear_deg(clear_degrees), danger_deg(danger_degrees) {}
   void update() {
+    static int startup_delay = 0;
     auto elapsed = millis() - t;
     float pos;
     switch (state) {
+      case State::INIT:
+        set_degrees(0.);  // DANGER by default
+        startup_delay++;
+        if (startup_delay >= 300) {
+          state = State::DANGER;
+        }
+        break;
       case State::MOVING_CLEAR:
         if (elapsed < up_time_ms / 2) {
           pos = (-cos(elapsed / (up_time_ms/2.) * 3.14159) + 1.0) / 4.0;
@@ -66,10 +74,8 @@ public:
         set_degrees(pos);
         break;
       case State::CLEAR:
-        set_degrees(1.);
-        break;
       case State::DANGER:
-        set_degrees(0.);
+        // Don't send each time if we haven't changed
         break;
     }
 
@@ -93,13 +99,14 @@ public:
   unsigned char servo;
 private:
   unsigned long t = 0;
-  State state = State::DANGER;
+  State state = State::INIT;
   const unsigned int up_time_ms = 2000;
   const unsigned int down_time_ms = 750;
   const unsigned char clear_deg;
   const unsigned char danger_deg;
 
   void set_degrees(float pos) {
+    static float last_deg = 99.0;
     if (pos > 1.0) {
       pos = 1.0;
     }
@@ -107,7 +114,10 @@ private:
       pos = 0.0;
     }
     float deg = (1.0* clear_deg - 1.0* danger_deg) * pos + 1.0 * danger_deg;
-    setPosition(servo, pwm, deg);
+    if(fabs(deg - last_deg) > 0.5) {
+      setPosition(servo, pwm, deg);
+      last_deg = deg;
+    }
   }
 };
 
@@ -115,9 +125,9 @@ class SequenceElement {
 public:
   Signal* signal;
   State signal_state;
-  unsigned int time_delay_ms = 1000;
+  int time_delay_ms = 1000;
 
-  SequenceElement(Signal* signal, State signal_state, float time_delay = 0.3): signal(signal), signal_state(signal_state), time_delay_ms(time_delay_ms) {}
+  SequenceElement(Signal* signal, State signal_state, int time_delay_ms_ = 1000): signal(signal), signal_state(signal_state), time_delay_ms(time_delay_ms_) {}
 };
 
 
@@ -131,7 +141,7 @@ const Signal signals[] = {
   {4, pwm0, 40, 95},
   {5, pwm0, 55, 105},
   {6, pwm0, 30, 70}, //- //5
-  // pink
+  // ROSE
   {1, pwm1, 95, 55}, //+
   {2, pwm1, 105, 65}, //+
   {3, pwm1, 140, 60}, //+
@@ -141,20 +151,20 @@ const Signal signals[] = {
   {7, pwm1, 60, 105}, //-
   {8, pwm1, 135, 90}, //+
   // blue
-  {1, pwm2, 35, 70}, //-
+  {1, pwm2, 25, 70}, //-
   {2, pwm2, 135, 80}, //+
-  {3, pwm2, 150, 90},  //+ //15
-  {4, pwm2, 135, 85}, //+
+  {3, pwm2, 140, 85},  //+ //15
+  {4, pwm2, 145, 95}, //+
   {5, pwm2, 70, 125}, //-
-  {6, pwm2, 110, 85},  //+
+  {6, pwm2, 95, 60},  //+
   {7, pwm2, 83, 119}, //- //19
 };
 
 
 class Sequence {
 public:
-  Sequence(SequenceElement* elements, unsigned char size) : size{size},
-    elements{elements} {}
+  Sequence(SequenceElement* elements, unsigned char size, int start_delay_ms_ = 0) : size{size},
+    elements{elements}, start_delay_ms{start_delay_ms_} {}
   void stop() {
     current = nullptr;
     sequence_running = false;
@@ -167,24 +177,7 @@ public:
     }
   }
   void update() {
-    /*
-    if (digitalRead(trigger) and debounce_counter > 20) {
-      count++;
-    } else {
-      count = 0;
-    }
-    if ((
-        (trigger >= A0 and count > 1) or (trigger < A0 and count > 0)
-        ) and current == nullptr and not is_waiting) {
-      Serial.print(trigger);
-      Serial.println(" triggered");
-      // start a cycle
-      is_waiting = true;
-      debounce_counter = 0;
-      count = 0;
-    }
-    */
-    if (is_waiting and not sequence_running) {
+    if (is_waiting && !sequence_running) {
       // Find the first element that is in the wrong state
       current = elements;
       while (current->signal->get_state() == current->signal_state) {
@@ -198,8 +191,12 @@ public:
       is_waiting = false;
       sequence_running = true;
       t = 0;
+      start_time = millis();
     }
     if (current == nullptr) {
+      return;
+    }
+    if(millis() - start_time < start_delay_ms) {
       return;
     }
 
@@ -210,7 +207,7 @@ public:
     if (current->signal_state == State::CLEAR) {
       current->signal->move_clear();
     }
-    if (current->signal->get_state() == current->signal_state or t != 0) {
+    if (current->signal->get_state() == current->signal_state || t != 0) {
       // Signal in correct state
       // Start waiting if not already
       if (t == 0) {
@@ -238,6 +235,8 @@ private:
   bool is_waiting = false;
   SequenceElement* current = nullptr;
   unsigned long t = 0;
+  int start_delay_ms = 0;
+  unsigned long start_time = 0;
   unsigned char size;
   SequenceElement* elements;
 };
@@ -246,7 +245,8 @@ Signal * get_signal(int servo_number, BoardColour colour) {
   if (colour == BoardColour::YELLOW) {
     return signals + (servo_number - 1);
   }
-  if (colour == BoardColour::PINK) {
+  
+  if (colour == BoardColour::ROSE) {
     return signals + (servo_number - 1) + 6;
   }
   if (colour == BoardColour::BLUE) {
@@ -268,43 +268,43 @@ const SequenceElement se12[] = {
 const SequenceElement se11[] = {
   {get_signal(3, BoardColour::YELLOW), State::DANGER},
   {get_signal(4, BoardColour::YELLOW), State::CLEAR},
-  {get_signal(7, BoardColour::PINK), State::CLEAR},
+  {get_signal(7, BoardColour::ROSE), State::CLEAR},
 };
 const SequenceElement se10[] = {
   {get_signal(4, BoardColour::YELLOW), State::DANGER},
-  {get_signal(5, BoardColour::PINK), State::DANGER},
-  {get_signal(6, BoardColour::PINK), State::DANGER},
-  {get_signal(7, BoardColour::PINK), State::DANGER},
+  {get_signal(5, BoardColour::ROSE), State::DANGER},
+  {get_signal(6, BoardColour::ROSE), State::DANGER},
+  {get_signal(7, BoardColour::ROSE), State::DANGER},
   {get_signal(3, BoardColour::YELLOW), State::CLEAR},
 };
 const SequenceElement se9[] = {
-  {get_signal(4, BoardColour::PINK), State::DANGER},
+  {get_signal(4, BoardColour::ROSE), State::DANGER},
   {get_signal(3, BoardColour::YELLOW), State::DANGER},
-  {get_signal(5, BoardColour::PINK), State::CLEAR},
-  {get_signal(6, BoardColour::PINK), State::CLEAR},
+  {get_signal(5, BoardColour::ROSE), State::CLEAR},
+  {get_signal(6, BoardColour::ROSE), State::CLEAR},
 };
 const SequenceElement se8[] = {
-  {get_signal(3, BoardColour::PINK), State::DANGER},
+  {get_signal(3, BoardColour::ROSE), State::DANGER},
   {get_signal(5, BoardColour::YELLOW), State::DANGER},
-  {get_signal(5, BoardColour::PINK), State::DANGER},
-  {get_signal(6, BoardColour::PINK), State::DANGER},
-  {get_signal(4, BoardColour::PINK), State::CLEAR},
+  {get_signal(5, BoardColour::ROSE), State::DANGER},
+  {get_signal(6, BoardColour::ROSE), State::DANGER},
+  {get_signal(4, BoardColour::ROSE), State::CLEAR},
 };
 const SequenceElement se7[] = {
-  {get_signal(8, BoardColour::PINK), State::DANGER},
-  {get_signal(4, BoardColour::PINK), State::DANGER},
+  {get_signal(8, BoardColour::ROSE), State::DANGER},
+  {get_signal(4, BoardColour::ROSE), State::DANGER},
   {get_signal(5, BoardColour::YELLOW), State::DANGER},
-  {get_signal(3, BoardColour::PINK), State::CLEAR},
+  {get_signal(3, BoardColour::ROSE), State::CLEAR},
 };
 const SequenceElement se6[] = {
-  {get_signal(8, BoardColour::PINK), State::DANGER},
-  {get_signal(1, BoardColour::PINK), State::DANGER},
-  {get_signal(2, BoardColour::PINK), State::CLEAR},
+  {get_signal(8, BoardColour::ROSE), State::DANGER},
+  {get_signal(1, BoardColour::ROSE), State::DANGER},
+  {get_signal(2, BoardColour::ROSE), State::CLEAR},
 };
 const SequenceElement se5[] = {
-  {get_signal(8, BoardColour::PINK), State::DANGER},
-  {get_signal(2, BoardColour::PINK), State::DANGER},
-  {get_signal(1, BoardColour::PINK), State::CLEAR},
+  {get_signal(8, BoardColour::ROSE), State::DANGER},
+  {get_signal(2, BoardColour::ROSE), State::DANGER},
+  {get_signal(1, BoardColour::ROSE), State::CLEAR},
 };
 const SequenceElement se4[] = {
   {get_signal(3, BoardColour::BLUE), State::DANGER},
@@ -333,29 +333,29 @@ const SequenceElement seA1[] = {
   {get_signal(6, BoardColour::BLUE), State::CLEAR},
 };
 const SequenceElement seA0[] = {
-  {get_signal(3, BoardColour::PINK), State::DANGER},
-  {get_signal(4, BoardColour::PINK), State::DANGER},
-  {get_signal(2, BoardColour::PINK), State::DANGER},
-  {get_signal(1, BoardColour::PINK), State::DANGER},
-  {get_signal(8, BoardColour::PINK), State::CLEAR},
+  {get_signal(3, BoardColour::ROSE), State::DANGER},
+  {get_signal(4, BoardColour::ROSE), State::DANGER},
+  {get_signal(2, BoardColour::ROSE), State::DANGER},
+  {get_signal(1, BoardColour::ROSE), State::DANGER},
+  {get_signal(8, BoardColour::ROSE), State::CLEAR},
   {get_signal(5, BoardColour::YELLOW), State::CLEAR},
 };
 
 const SequenceElement he1[] = {
-  {get_signal(1, BoardColour::PINK), State::DANGER, 0},
-  {get_signal(2, BoardColour::PINK), State::DANGER, 0},
-  {get_signal(8, BoardColour::PINK), State::DANGER, 0}, 
+  {get_signal(1, BoardColour::ROSE), State::DANGER, 0},
+  {get_signal(2, BoardColour::ROSE), State::DANGER, 0},
+  {get_signal(8, BoardColour::ROSE), State::DANGER, 0}, 
 };
 const SequenceElement he2[] = {
-  {get_signal(3, BoardColour::PINK), State::DANGER, 0},
-  {get_signal(4, BoardColour::PINK), State::DANGER, 0},
+  {get_signal(3, BoardColour::ROSE), State::DANGER, 0},
+  {get_signal(4, BoardColour::ROSE), State::DANGER, 0},
   {get_signal(5, BoardColour::YELLOW), State::DANGER, 0}, 
 };
 const SequenceElement he3[] = {
-  {get_signal(6, BoardColour::PINK), State::DANGER, 0},
+  {get_signal(6, BoardColour::ROSE), State::DANGER, 0},
 };
 const SequenceElement he4[] = {
-  {get_signal(5, BoardColour::PINK), State::DANGER, 0},
+  {get_signal(5, BoardColour::ROSE), State::DANGER, 2000},
 };
 const SequenceElement he5[] = {
   {get_signal(6, BoardColour::YELLOW), State::DANGER, 0},
@@ -363,7 +363,7 @@ const SequenceElement he5[] = {
   {get_signal(1, BoardColour::YELLOW), State::DANGER, 0}, 
 };
 const SequenceElement he6[] = {
-  {get_signal(7, BoardColour::PINK), State::DANGER, 0},
+  {get_signal(7, BoardColour::ROSE), State::DANGER, 0},
 };
 const SequenceElement he7[] = {
   {get_signal(3, BoardColour::YELLOW), State::DANGER, 0},
@@ -421,20 +421,23 @@ const char point_triggers[] = {
   A0  
 };
 
+// Last value in triple is start delay in ms
 const Sequence hall_sequences[] = {
-  {he1, 3},
-  {he2, 3},
-  {he3, 1},
-  {he4, 1},
-  {he5, 3},
-  {he6, 1},
-  {he7, 2},
-  {he8, 1},
-  {he9, 1},
-  {he10, 2},
-  {he11, 1},
-  {he12, 2},
+  {he1, 3, 2000},
+  {he2, 3, 2000},
+  {he3, 1, 2000},
+  {he4, 1, 2000},
+  {he5, 3, 2000},
+  {he6, 1, 2000},
+  {he7, 2, 2000},
+  {he8, 1, 2000},
+  {he9, 1, 2000},
+  {he10, 2, 2000},
+  {he11, 1, 2000},
+  {he12, 2, 2000},
 };
+
+float hall_averages[12] = {};
 
 void output_enable() {
   digitalWrite(A5, LOW);
@@ -445,22 +448,29 @@ void output_disable() {
 
 
 void setup() {
-  pinMode(0, OUTPUT);
-  pinMode(1, OUTPUT);
-  pinMode(2, OUTPUT);
-  pinMode(3, OUTPUT);
+  // Multiplexer select pins
+  pinMode(14, OUTPUT);
+  pinMode(15, OUTPUT);
+  pinMode(16, OUTPUT);
+  pinMode(17, OUTPUT);
+
+  // Set up ADC
+  ADCSRA &= ~(bit (ADPS0) | bit (ADPS1) | bit (ADPS2)); // clear prescaler bits
+  ADCSRA |= bit (ADPS0) | bit (ADPS1) | bit (ADPS2);   // 128
 
   // OE
   pinMode(A5, OUTPUT);
   output_disable();
   
   for (auto& pin : point_triggers) {
-    pinMode(pin, INPUT);
+    pinMode(pin, INPUT_PULLUP);
   }
 
   Serial.begin(115200);
 
   i2c.setWireTimeout(25000, true);  //25ms (25000us) is typical according to the wire.cpp source, reset on fault
+  i2c.setClock(10000);
+  i2c.begin();
 
   pwm0.begin();
   pwm0.setOscillatorFrequency(27000000);
@@ -478,23 +488,32 @@ void setup() {
   Serial.println(F("Ready"));
 }
 
-
 void loop() {
-  bool send_heartbeat = false;
-  if (millis() - heartbeat > 2000) {
-    heartbeat = millis();
-    send_heartbeat = true;
-  }
+  static int loop_count = 0;
+  static bool startup = true;
+  auto now = millis();
+  auto dt = now - heartbeat;
+  loop_count++;
+  if (dt > 2000) {
+    heartbeat = now;
+    Serial.println(F("Heartbeat - version: hall effect"));
+    Serial.print(F("Loop time: "));
+    Serial.println(1.0 * dt / loop_count);
+    loop_count = 0;
+    output_enable();
+    startup = false;
+}
 
   // Check for sequences that want to change their signals
+  static int last_point_trigger = 99;
   for (unsigned char i=0; i< sizeof(point_sequences)/sizeof(point_sequences[0]); i++) {
     // Check the triggers
-    if (debounce_counter > 20) {
-      if (digitalRead(point_triggers[i])) {
-        point_sequences[i].enqueue();
-        debounce_counter = 0;
+    if (!digitalRead(point_triggers[i])) {
+      point_sequences[i].enqueue();
+      if (last_point_trigger != i) {
         Serial.print(F("Points triggered: "));
         Serial.println(point_triggers[i]*1);
+        last_point_trigger = i;
       }
     }
   }
@@ -503,29 +522,44 @@ void loop() {
   for (const auto & sequence : point_sequences) {
     sequence.update();
   }
-
-  // Check for hall effect triggers to set signals back to danger
-  for (unsigned char i=4; i< 5; i++) {
-  //for (unsigned char i=0; i< sizeof(hall_sequences)/sizeof(hall_sequences[0]); i++) {
+ 
+  for (int hall_index=0; hall_index < 12; hall_index++) {
     // Check the triggers
     // Triggers are sequential so no need to map them
     
     // Set the pins to sample the correct input
-    digitalWrite(3, (i & (1<<0))!=0);  // Multiplexer A0
-    digitalWrite(2, (i & (1<<1))!=0);  // Multiplexer A1
-    digitalWrite(1, (i & (1<<2))!=0);  // Multiplexer A2
-    digitalWrite(0, (i & (1<<3))!=0);  // Multiplexer A3
-    
-    /*
-    int val = analogRead(A4);
-    int tol = (int)((3.7-2.5)/5.0*1024.0);  // 3.7V trigger
-    Serial.println(val);
-    if (val > 512+tol or val < 512-tol) {  // Check in both directions in case magnets flipped
-      hall_sequences[i].enqueue();
-      Serial.print(F("Hall effect triggered: "));
-      Serial.println(i);
+    digitalWrite(14, (hall_index & (1<<0))!=0);  // Multiplexer A0
+    digitalWrite(15, (hall_index & (1<<1))!=0);  // Multiplexer A1
+    digitalWrite(16, (hall_index & (1<<2))!=0);  // Multiplexer A2
+    digitalWrite(17, (hall_index & (1<<3))!=0);  // Multiplexer A3
+
+    if(startup) {
+      analogRead(A4);
+      hall_averages[hall_index] *= 0.5;
+      hall_averages[hall_index] += analogRead(A4) * 0.5;
+      continue;
     }
-    */
+    
+    int val = 0;
+    int loops = 2;
+    for (int j=0; j<loops; j++) {
+      val += analogRead(A4);  // throw away the first read to let it stabilise
+    }
+    val = val/loops;
+    //val = analogRead(A4);
+    constexpr static int tol = (int)((3.7-2.5)/5.0*1024.0);  // 3.7V trigger
+    static int last_hall_trigger = 99;
+    //if (val > 512+tol or val < 512-tol) {  // Check in both directions in case magnets flipped
+    if (val > hall_averages[hall_index] * 1.3 || val < hall_averages[hall_index] * 0.7) {  // Check in both directions in case magnets flipped
+      hall_sequences[hall_index].enqueue();
+      if (last_hall_trigger != hall_index) {
+        Serial.print(F("Hall effect triggered: "));
+        Serial.print(hall_index+1);
+        Serial.print(F(" - "));
+        Serial.println(val);
+        last_hall_trigger = hall_index;
+      }
+    }
   }
 
   for (const auto & sequence : hall_sequences) {
@@ -536,11 +570,4 @@ void loop() {
   for (auto& signal : signals) {
     signal.update();
   }
-  output_enable();
-
-  if (send_heartbeat) {
-    Serial.println(F("Heartbeat - version: hall effect"));
-  }
-
-  debounce_counter = min(debounce_counter + 1, 200);
 }
